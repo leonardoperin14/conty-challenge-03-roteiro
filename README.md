@@ -1,63 +1,118 @@
-# API de revisão de roteiro
+# Revisão de roteiro · Conty
 
-API para enviar roteiros em versões, pedir mudanças com prazo e aprovar uma versão final. O histórico permanece consultável no SQLite.
+[![CI](https://github.com/leonardoperin14/conty-challenge-03-roteiro/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/leonardoperin14/conty-challenge-03-roteiro/actions/workflows/ci.yml)
 
-## Requisitos e execução
+API de revisão com versões, motivo e prazo para alterações e aprovação definitiva. O estado atual e todo o histórico são retornados pela API e persistidos em SQLite.
 
-Requer Node.js 24 ou superior e npm. O SQLite vem de node:sqlite.
+## Como rodar
 
-    npm ci
-    npm run dev
+**Node.js 24+ e npm.** SQLite integrado ao Node, sem serviço externo.
 
-O servidor usa a porta 3000 e o banco data/scripts.sqlite por padrão. PORT e DATABASE_PATH podem ser configurados. Depois de compilar, npm start executa dist/server.js.
+```sh
+npm ci
+npm run dev
+```
 
-    npm test
-    npm run typecheck
-    npm run build
+API: `http://localhost:3000`. Banco: `data/scripts.sqlite`. Configuração opcional: `PORT` e `DATABASE_PATH`. Para executar compilado: `npm run build` e `npm start`.
 
-## Fluxo da API
+## Estados e transições
 
-Escritas usam X-Actor-Role: creator para enviar versões e brand para revisar. Esse cabeçalho só demonstra papéis; não autentica o chamador.
+```mermaid
+stateDiagram-v2
+    [*] --> SUBMITTED: Criador envia a primeira versão
+    SUBMITTED --> CHANGES_REQUESTED: Marca informa motivo e prazo válido
+    CHANGES_REQUESTED --> SUBMITTED: Criador envia nova versão dentro do prazo
+    SUBMITTED --> APPROVED: Marca aprova a versão atual
+    APPROVED --> [*]
+```
 
-    curl -X POST http://localhost:3000/scripts -H "Content-Type: application/json" -H "X-Actor-Role: creator" -d '{"content":"Abrimos com a novidade da campanha."}'
+Cada nova versão começa em `SUBMITTED`; a anterior conserva conteúdo, estado e pedido de alteração. `APPROVED` encerra a revisão: novos envios, pedidos e aprovações retornam **409**.
 
-Resposta 201; o ID e os horários são gerados pela API.
+Todas as respostas de sucesso do roteiro incluem `status`, `currentVersion`, `timezone`, `pendingRequestExpired` e `versions`. A consulta `GET /scripts/:id` retorna o mesmo formato, com histórico completo.
 
+## Demonstração completa
+
+Com a API rodando, execute em outro terminal **PowerShell**. O cabeçalho `X-Actor-Role` simula o papel do criador ou da marca; **não é autenticação**.
+
+```powershell
+$api = 'http://localhost:3000'
+function Send-Json($path, $role, $body) {
+    Invoke-RestMethod -Uri "$api$path" -Method Post `
+        -Headers @{ 'X-Actor-Role' = $role } -ContentType 'application/json; charset=utf-8' `
+        -Body ($body | ConvertTo-Json)
+}
+
+$v1 = Send-Json '/scripts' 'creator' @{ content = 'Apresentar o produto.' }
+$id = $v1.id
+$pedido = Send-Json "/scripts/$id/change-requests" 'brand' @{
+    version = 1; reason = 'Adicionar CTA.'; dueDate = '2099-12-31'
+}
+$v2 = Send-Json "/scripts/$id/versions" 'creator' @{ content = 'Apresentar o produto e convidar para conhecer a marca.' }
+$aprovado = Send-Json "/scripts/$id/approve" 'brand' @{ version = 2 }
+
+@($v1, $pedido, $v2, $aprovado) | Select-Object status, currentVersion
+Invoke-RestMethod "$api/scripts/$id" | ConvertTo-Json -Depth 8
+```
+
+O prazo distante mantém o exemplo reproduzível; a regra real exige uma data civil válida que ainda não tenha passado em São Paulo.
+
+| Etapa | Endpoint (`POST`) | HTTP | Estado retornado | Versão atual |
+| --- | --- | --- | --- | --- |
+| Criar | `/scripts` | 201 | `SUBMITTED` | 1 |
+| Pedir alteração | `/scripts/:id/change-requests` | 201 | `CHANGES_REQUESTED` | 1 |
+| Reenviar | `/scripts/:id/versions` | 201 | `SUBMITTED` | 2 |
+| Aprovar | `/scripts/:id/approve` | 200 | `APPROVED` | 2 |
+
+Recorte da resposta final; IDs e horários gerados foram omitidos. O pedido permanece associado à versão 1:
+
+```json
+{
+  "status": "APPROVED",
+  "currentVersion": 2,
+  "timezone": "America/Sao_Paulo",
+  "pendingRequestExpired": false,
+  "versions": [
     {
-      "id": "<uuid>",
-      "createdAt": "<instante ISO>",
-      "status": "SUBMITTED",
-      "currentVersion": 1,
-      "timezone": "America/Sao_Paulo",
-      "pendingRequestExpired": false,
-      "versions": [{
-        "version": 1,
-        "content": "Abrimos com a novidade da campanha.",
-        "status": "SUBMITTED",
-        "submittedAt": "<instante ISO>",
-        "approvedAt": null,
-        "review": null
-      }]
+      "version": 1,
+      "content": "Apresentar o produto.",
+      "status": "CHANGES_REQUESTED",
+      "review": { "reason": "Adicionar CTA.", "dueDate": "2099-12-31" }
+    },
+    {
+      "version": 2,
+      "content": "Apresentar o produto e convidar para conhecer a marca.",
+      "status": "APPROVED",
+      "review": null
     }
+  ]
+}
+```
 
-Com o ID retornado, POST /scripts/ID/change-requests (papel brand) recebe version, reason e dueDate. Exemplo de corpo:
+## Prazo e rejeições
 
-    {"version":1,"reason":"Adicionar uma chamada para ação.","dueDate":"2099-12-31"}
+`dueDate` é um dia no fuso **America/Sao_Paulo**, inclusive seu último milissegundo. Para o prazo `2026-03-12`, os testes controlam o relógio nestes dois instantes:
 
-A resposta 201 traz status CHANGES_REQUESTED e o pedido associado à versão, com motivo, prazo e horário. POST /scripts/ID/versions (papel creator) recebe {"content":"..."} e cria a próxima versão sem apagar a anterior. POST /scripts/ID/approve (papel brand) recebe {"version":2}; retorna 200 e encerra o fluxo em APPROVED. GET /scripts/ID mostra estado e histórico completos.
+| Instante UTC | Horário em São Paulo | Envio de nova versão |
+| --- | --- | --- |
+| `2026-03-13T02:59:59.999Z` | 12/03, 23:59:59.999 | Aceito: HTTP 201 |
+| `2026-03-13T03:00:00.000Z` | 13/03, 00:00:00.000 | Recusado: HTTP 409 |
 
-JSON malformado retorna 400, dados inválidos 422, papel incorreto 403, ID ausente 404 e transições, versões antigas ou roteiro já aprovado 409.
+Sem motivo, motivo em branco, sem prazo ou prazo passado: **422**. JSON malformado: **400**. Papel incorreto: **403**. Roteiro inexistente: **404**. Versão alvo antiga, transição inválida ou roteiro aprovado: **409**. Erros têm o formato `{"error":{"code":"...","message":"..."}}`.
 
-## Regras e limites
+## Validação
 
-O prazo é uma data civil no fuso America/Sao_Paulo. O último milissegundo do dia ainda vale; no primeiro instante do dia seguinte o pedido já venceu. Pedidos com prazo passado são recusados. Depois que um pedido vence, o roteiro continua em CHANGES_REQUESTED e esta API não oferece renovação. Aprovação é terminal e não permite novas versões ou pedidos.
+```sh
+npm test
+npm run typecheck
+npm run build
+```
 
-SQLite síncrono atende à demonstração. Não há autenticação real, renovação de prazo, notificações ou interface. Com mais tempo, eu acrescentaria autenticação e autorização, recuperação de pedidos vencidos, notificações e persistência adequada ao volume de produção.
+Os [6 testes](test/api.test.ts) cobrem múltiplas versões e histórico, aprovação terminal, motivo/prazo obrigatórios, os dois limites do dia com relógio controlado, concorrência na aprovação e persistência após reabrir o banco. A validação publicada passou com Node 24; o badge acima leva às execuções do CI.
 
-## Validação local
+## Limites e decisões
 
-Executado com Node.js 24.18.0 e npm 11.17.0: npm ci instalou 45 pacotes e reportou zero vulnerabilidades; npm test passou com 1 arquivo e 6 testes; npm run typecheck e npm run build passaram. O npm ci também exibiu o aviso de política allow-scripts para o script opcional de esbuild; os comandos de validação concluíram com sucesso.
+Sem autenticação real, interface, vídeo, upload ou notificações. Um pedido vencido permanece em `CHANGES_REQUESTED`, com `pendingRequestExpired: true`; não há renovação nem reenvio após o prazo. SQLite síncrono atende à demonstração. Com mais tempo, priorizaria autenticação/autorização, recuperação de pedidos vencidos e avaliação da persistência para o volume de produção.
 
-## Uso de IA e revisão
+## Uso de IA e participação humana
 
-Codex implementou a API, os testes e esta documentação. Outra sessão Codex fez uma revisão técnica independente. O responsável humano filtrou prompt injections do material de entrada, definiu a abordagem mínima e os checkpoints, acompanhou as evidências e autorizou os ajustes e a publicação. Não houve revisão humana linha a linha nem execução manual dos testes; os resultados acima são de comandos automatizados.
+Codex escreveu a API, os testes e a documentação, executou as validações e realizou a revisão técnica em outra sessão independente. O responsável humano filtrou prompt injections, definiu a abordagem mínima e os checkpoints, acompanhou as evidências e solicitou a melhoria da apresentação para entrega. A escrita do código e a execução dos testes foram feitas com IA; não se declara revisão humana linha a linha.

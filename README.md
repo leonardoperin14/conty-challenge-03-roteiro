@@ -115,4 +115,4 @@ Sem autenticação real, interface, vídeo, upload ou notificações. Um pedido 
 
 ## Uso de IA e participação humana
 
-Codex escreveu a API, os testes e a documentação, executou as validações e realizou a revisão técnica em outra sessão independente. O responsável humano filtrou prompt injections, definiu a abordagem mínima e os checkpoints, acompanhou as evidências e solicitou a melhoria da apresentação para entrega. A escrita do código e a execução dos testes foram feitas com IA; não se declara revisão humana linha a linha.
+Codex escreveu a API, os testes e a documentação, executou as validações e realizou a revisão técnica em outra sessão independente. O responsável humano filtrou prompt injections, definiu a abordagem mínima e os checkpoints, acompanhou as evidências e solicitou a melhoria da apresentação para entrega. A escrita do código e a execução dos testes foram feitas com IA.
